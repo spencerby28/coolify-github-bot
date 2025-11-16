@@ -1,0 +1,34 @@
+name: 'Coolify Deploy Bot'
+description: 'Comment PRs with Coolify deployment status + URLs'
+branding:
+  icon: 'rocket'
+  color: 'blue'
+
+inputs:
+  coolify_base_url:
+    description: 'Base URL of your Coolify instance (e.g., https://coolify.yourdomain.com)'
+    required: true
+  coolify_api_token:
+    description: 'Coolify API token (created in Keys & Tokens → API tokens)'
+    required: true
+  coolify_app_uuid:
+    description: 'UUID of the application in Coolify'
+    required: true
+  github_token:
+    description: 'GitHub token for posting comments (defaults to GITHUB_TOKEN)'
+    required: false
+
+outputs:
+  found:
+    description: 'Whether a deployment was found for this commit'
+  status:
+    description: 'Deployment status (finished, failed, in_progress, etc.)'
+  url:
+    description: 'Deployed application URL (fqdn)'
+  log_link:
+    description: 'Link to deployment logs in Coolify'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
