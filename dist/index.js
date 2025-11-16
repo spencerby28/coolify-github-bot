@@ -30000,31 +30000,44 @@ function formatComment(deployment, baseUrl) {
     return lines.join('\n');
 }
 async function findOrCreateComment(octokit, body) {
-    const { repo, issue } = github.context;
-    if (!issue?.number) {
-        throw new Error('No issue number found in context');
-    }
-    const { data: comments } = await octokit.rest.issues.listComments({
-        ...repo,
-        issue_number: issue.number,
-    });
-    const existing = comments.find(c => c.user?.type === 'Bot' && c.body?.startsWith('🚀 **Coolify deployment**'));
-    if (existing) {
-        await octokit.rest.issues.updateComment({
-            ...repo,
-            comment_id: existing.id,
-            body,
-        });
-        core.info(`Updated existing comment ${existing.id}`);
-    }
-    else {
-        await octokit.rest.issues.createComment({
+    const { repo, issue, eventName } = github.context;
+    // For pull requests, comment on the PR
+    if (issue?.number) {
+        const { data: comments } = await octokit.rest.issues.listComments({
             ...repo,
             issue_number: issue.number,
+        });
+        const existing = comments.find(c => c.user?.type === 'Bot' && c.body?.startsWith('🚀 **Coolify deployment**'));
+        if (existing) {
+            await octokit.rest.issues.updateComment({
+                ...repo,
+                comment_id: existing.id,
+                body,
+            });
+            core.info(`Updated existing PR comment ${existing.id}`);
+        }
+        else {
+            await octokit.rest.issues.createComment({
+                ...repo,
+                issue_number: issue.number,
+                body,
+            });
+            core.info('Created new PR comment');
+        }
+        return;
+    }
+    // For push events, comment on the commit
+    if (eventName === 'push') {
+        const { sha } = github.context;
+        await octokit.rest.repos.createCommitComment({
+            ...repo,
+            commit_sha: sha,
             body,
         });
-        core.info('Created new comment');
+        core.info(`Created commit comment for ${sha}`);
+        return;
     }
+    core.warning('No PR or push event detected, skipping comment');
 }
 async function run() {
     try {
