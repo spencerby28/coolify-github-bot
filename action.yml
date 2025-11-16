@@ -1,0 +1,50 @@
+name: 'Coolify Deploy Bot'
+description: 'Post Vercel-style deployment comments on PRs with status and URLs from Coolify'
+author: 'Your Name'
+
+branding:
+  icon: 'cloud'
+  color: 'purple'
+
+inputs:
+  coolify_base_url:
+    description: 'Coolify instance base URL (e.g., https://coolify.yourdomain.com)'
+    required: true
+
+  coolify_api_token:
+    description: 'Coolify API token (create in Coolify under Keys & Tokens → API tokens)'
+    required: true
+
+  coolify_app_uuid:
+    description: 'UUID of the application in Coolify (from its URL or API)'
+    required: true
+
+  github_token:
+    description: 'GitHub token for posting comments (usually secrets.GITHUB_TOKEN)'
+    required: true
+    default: ${{ github.token }}
+
+  update_deployment:
+    description: 'Whether to update GitHub Deployment status (true/false)'
+    required: false
+    default: 'true'
+
+outputs:
+  found:
+    description: 'Whether a deployment was found for this commit (true/false)'
+
+  status:
+    description: 'Deployment status (e.g., finished, failed, in_progress)'
+
+  url:
+    description: 'Deployed application URL (FQDN from Coolify)'
+
+  log_link:
+    description: 'Link to deployment logs in Coolify'
+
+  uuid:
+    description: 'Coolify deployment UUID'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

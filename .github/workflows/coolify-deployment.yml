@@ -1,0 +1,33 @@
+name: Coolify Deployment Status
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  deployment-status:
+    runs-on: ubuntu-latest
+    name: Update deployment status
+
+    steps:
+      - name: Check Coolify deployment
+        id: coolify
+        uses: ./  # Replace with: your-username/coolify-deploy-bot@v1
+        with:
+          coolify_base_url: ${{ secrets.COOLIFY_BASE_URL }}
+          coolify_api_token: ${{ secrets.COOLIFY_API_TOKEN }}
+          coolify_app_uuid: ${{ secrets.COOLIFY_APP_UUID }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          update_deployment: true
+
+      - name: Show deployment info
+        if: steps.coolify.outputs.found == 'true'
+        run: |
+          echo "Deployment found!"
+          echo "Status: ${{ steps.coolify.outputs.status }}"
+          echo "URL: ${{ steps.coolify.outputs.url }}"
+          echo "Logs: ${{ steps.coolify.outputs.log_link }}"
