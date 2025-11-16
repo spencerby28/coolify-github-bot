@@ -62,9 +62,14 @@ jobs:
           coolify_base_url: ${{ secrets.COOLIFY_BASE_URL }}
           coolify_api_token: ${{ secrets.COOLIFY_API_TOKEN }}
           coolify_app_uuid: ${{ secrets.COOLIFY_APP_UUID }}
+          github_token: ${{ github.token }}
+          # Optional: poll_interval: 10  # seconds between polls (default: 10)
+          # Optional: timeout_minutes: 30  # max wait time (default: 30)
 ```
 
 **Note:** Use `@v1.0.0` for a specific version, or `@main` for the latest from main branch.
+
+The action will automatically wait for deployment completion and update the comment as status changes.
 
 ## Options
 
@@ -112,10 +117,14 @@ Note: For push events, you'll need to use a different approach for comments (e.g
 
 ## How it works
 
-1. **Trigger**: Runs on PR open, update, or reopen
-2. **API Query**: Calls `GET /api/v1/deployments/applications/{uuid}` to fetch recent deployments
-3. **Match**: Filters deployments by `commit` field matching `GITHUB_SHA`
-4. **Comment**: Creates or updates a single bot comment with deployment info
+1. **Trigger**: Runs on PR open, update, reopen, or push to main
+2. **Initial Check**: Queries Coolify API for deployments matching the commit SHA
+3. **Post Comment**: Creates initial comment with current deployment status
+4. **Polling**: If deployment is in progress, polls every 10 seconds (configurable) until completion
+5. **Update Comment**: Updates the comment as status changes (in_progress → finished/failed)
+6. **Completion**: Action completes when deployment reaches terminal state (finished/failed) or timeout
+
+The action will wait up to 30 minutes (configurable) for deployment completion, updating the comment as the status changes.
 
 ## Outputs
 
