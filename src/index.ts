@@ -100,6 +100,8 @@ async function findOrCreateComment(
   }
   
   // For push events, comment on the commit
+  // Note: We can't update commit comments, so we create a new one each time
+  // GitHub will show multiple comments, but that's acceptable for status updates
   if (eventName === 'push') {
     const { sha } = github.context;
     await octokit.rest.repos.createCommitComment({
@@ -114,11 +116,70 @@ async function findOrCreateComment(
   core.warning('No PR or push event detected, skipping comment');
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function pollUntilComplete(
+  baseUrl: string,
+  apiToken: string,
+  appUuid: string,
+  commitSha: string,
+  deploymentUuid: string,
+  octokit: ReturnType<typeof github.getOctokit>,
+  pollIntervalSeconds: number = 10,
+  timeoutMinutes: number = 30
+): Promise<CoolifyDeployment> {
+  const timeoutMs = timeoutMinutes * 60 * 1000;
+  const pollIntervalMs = pollIntervalSeconds * 1000;
+  const startTime = Date.now();
+  let lastStatus = '';
+  
+  while (true) {
+    const deployment = await getDeploymentForCommit(baseUrl, apiToken, appUuid, commitSha);
+    
+    if (!deployment || deployment.deployment_uuid !== deploymentUuid) {
+      throw new Error('Deployment not found or changed during polling');
+    }
+    
+    const status = deployment.status;
+    const isTerminal = status === 'finished' || status === 'failed';
+    
+    // Update comment if status changed
+    // For push events, this will create a new comment each time (can't update commit comments)
+    if (status !== lastStatus) {
+      core.info(`Deployment status changed: ${lastStatus || 'initial'} → ${status}`);
+      const commentBody = formatComment(deployment, baseUrl);
+      await findOrCreateComment(octokit, commentBody);
+      lastStatus = status;
+    }
+    
+    // Check if deployment is complete
+    if (isTerminal) {
+      core.info(`Deployment completed with status: ${status}`);
+      return deployment;
+    }
+    
+    // Check timeout
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= timeoutMs) {
+      core.warning(`Timeout reached (${timeoutMinutes} minutes). Deployment still in progress.`);
+      return deployment;
+    }
+    
+    // Wait before next poll
+    core.info(`Deployment still in progress (${status}). Waiting ${pollIntervalSeconds}s before next check...`);
+    await sleep(pollIntervalMs);
+  }
+}
+
 async function run(): Promise<void> {
   try {
     const baseUrl = core.getInput('coolify_base_url', { required: true });
     const apiToken = core.getInput('coolify_api_token', { required: true });
     const appUuid = core.getInput('coolify_app_uuid', { required: true });
+    const pollInterval = parseInt(core.getInput('poll_interval') || '10', 10);
+    const timeoutMinutes = parseInt(core.getInput('timeout_minutes') || '30', 10);
     
     // Get GitHub token from input, env var, or use empty string (will use default from @actions/github)
     const githubTokenInput = core.getInput('github_token');
@@ -130,13 +191,19 @@ async function run(): Promise<void> {
     if (!githubToken) {
       core.warning('GitHub token not provided. This may cause issues posting comments.');
       core.warning('Please ensure GITHUB_TOKEN is available or pass github_token input.');
-      // Don't throw error - let it try to use default token from @actions/github
-      // Some contexts might work without explicit token
     }
 
     core.info(`Looking for deployment with commit SHA: ${commitSha}`);
 
-    const deployment = await getDeploymentForCommit(
+    // Always pass a token - use provided one or fallback to env var (should always be available in GitHub Actions)
+    const tokenToUse = githubToken || process.env.GITHUB_TOKEN || '';
+    if (!tokenToUse) {
+      throw new Error('GitHub token is required. Please ensure GITHUB_TOKEN is available in your workflow.');
+    }
+    const octokit = github.getOctokit(tokenToUse);
+
+    // Initial check for deployment
+    let deployment = await getDeploymentForCommit(
       baseUrl,
       apiToken,
       appUuid,
@@ -151,20 +218,38 @@ async function run(): Promise<void> {
 
     core.info(`Found deployment: ${deployment.deployment_uuid} with status: ${deployment.status}`);
     
+    // Post initial comment
+    const initialCommentBody = formatComment(deployment, baseUrl);
+    await findOrCreateComment(octokit, initialCommentBody);
+    
+    // If deployment is already complete, we're done
+    const isTerminal = deployment.status === 'finished' || deployment.status === 'failed';
+    if (isTerminal) {
+      core.info(`Deployment already completed with status: ${deployment.status}`);
+    } else {
+      // Poll until completion
+      core.info(`Deployment in progress. Polling every ${pollInterval}s (timeout: ${timeoutMinutes}min)...`);
+      deployment = await pollUntilComplete(
+        baseUrl,
+        apiToken,
+        appUuid,
+        commitSha,
+        deployment.deployment_uuid,
+        octokit,
+        pollInterval,
+        timeoutMinutes
+      );
+    }
+    
+    // Set final outputs
     core.setOutput('found', 'true');
     core.setOutput('status', deployment.status);
     core.setOutput('url', deployment.fqdn || '');
     core.setOutput('log_link', `${baseUrl}/deployments/${deployment.deployment_uuid}`);
-
-    const commentBody = formatComment(deployment, baseUrl);
-    // Always pass a token - use provided one or fallback to env var (should always be available in GitHub Actions)
-    const tokenToUse = githubToken || process.env.GITHUB_TOKEN || '';
-    if (!tokenToUse) {
-      throw new Error('GitHub token is required. Please ensure GITHUB_TOKEN is available in your workflow.');
-    }
-    const octokit = github.getOctokit(tokenToUse);
     
-    await findOrCreateComment(octokit, commentBody);
+    // Final comment update (in case status changed during last poll)
+    const finalCommentBody = formatComment(deployment, baseUrl);
+    await findOrCreateComment(octokit, finalCommentBody);
     
   } catch (error) {
     if (error instanceof Error) {

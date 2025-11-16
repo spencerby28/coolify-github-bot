@@ -17,6 +17,14 @@ inputs:
   github_token:
     description: 'GitHub token for posting comments (defaults to GITHUB_TOKEN)'
     required: false
+  poll_interval:
+    description: 'Polling interval in seconds (default: 10)'
+    required: false
+    default: '10'
+  timeout_minutes:
+    description: 'Timeout in minutes for waiting for deployment completion (default: 30)'
+    required: false
+    default: '30'
 
 outputs:
   found:
