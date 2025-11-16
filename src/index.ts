@@ -43,8 +43,16 @@ async function getDeploymentForCommit(
   return matching.length > 0 ? matching[0] : null;
 }
 
-function formatComment(deployment: CoolifyDeployment, baseUrl: string): string {
+function formatComment(
+  deployment: CoolifyDeployment, 
+  baseUrl: string, 
+  appUuid: string,
+  isProduction: boolean = false
+): string {
   const logLink = `${baseUrl}/deployments/${deployment.deployment_uuid}`;
+  // Construct deployment page URL - users can retry from there
+  const deploymentPageLink = `${baseUrl}/deployments/${deployment.deployment_uuid}`;
+  
   const statusEmoji = deployment.status === 'finished' ? '✅' : 
                       deployment.status === 'failed' ? '❌' : 
                       deployment.status === 'in_progress' ? '🔄' : '⏳';
@@ -55,11 +63,41 @@ function formatComment(deployment: CoolifyDeployment, baseUrl: string): string {
     `${statusEmoji} **Status:** ${deployment.status}`,
   ];
 
-  if (deployment.fqdn) {
+  // Show URL prominently on success
+  if (deployment.status === 'finished' && deployment.fqdn) {
+    const urlLabel = isProduction ? '🌐 **Production URL**' : '🔗 **Preview URL**';
+    lines.push('');
+    lines.push(`${urlLabel}: [${deployment.fqdn}](${deployment.fqdn})`);
+  } else if (deployment.fqdn) {
+    // Show URL for in-progress or other states
     lines.push(`**URL:** ${deployment.fqdn}`);
   }
 
-  lines.push(`**Logs:** ${logLink}`);
+  lines.push('');
+  lines.push(`📋 [View Build Logs](${logLink})`);
+
+  // Add retry button on failure
+  if (deployment.status === 'failed') {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push('### 🔄 Retry Deployment');
+    lines.push('');
+    lines.push(`[🔄 Retry Deployment](${deploymentPageLink}) | [📋 View Logs](${logLink})`);
+    lines.push('');
+    lines.push('_Click "Retry Deployment" to redeploy this commit in Coolify._');
+  }
+
+  // Add timestamp
+  if (deployment.finished_at) {
+    const finishedDate = new Date(deployment.finished_at);
+    lines.push('');
+    lines.push(`<sub>Last updated: ${finishedDate.toLocaleString()}</sub>`);
+  } else {
+    const createdDate = new Date(deployment.created_at);
+    lines.push('');
+    lines.push(`<sub>Last updated: ${createdDate.toLocaleString()}</sub>`);
+  }
 
   return lines.join('\n');
 }
@@ -127,6 +165,7 @@ async function pollUntilComplete(
   commitSha: string,
   deploymentUuid: string,
   octokit: ReturnType<typeof github.getOctokit>,
+  isProduction: boolean,
   pollIntervalSeconds: number = 10,
   timeoutMinutes: number = 30
 ): Promise<CoolifyDeployment> {
@@ -149,7 +188,7 @@ async function pollUntilComplete(
     // For push events, this will create a new comment each time (can't update commit comments)
     if (status !== lastStatus) {
       core.info(`Deployment status changed: ${lastStatus || 'initial'} → ${status}`);
-      const commentBody = formatComment(deployment, baseUrl);
+      const commentBody = formatComment(deployment, baseUrl, appUuid, isProduction);
       await findOrCreateComment(octokit, commentBody);
       lastStatus = status;
     }
@@ -218,8 +257,12 @@ async function run(): Promise<void> {
 
     core.info(`Found deployment: ${deployment.deployment_uuid} with status: ${deployment.status}`);
     
+    // Determine if this is a production deployment (push to main) or preview (PR)
+    const { ref, eventName } = github.context;
+    const isProduction = eventName === 'push' && (ref === 'refs/heads/main' || ref === 'refs/heads/master');
+    
     // Post initial comment
-    const initialCommentBody = formatComment(deployment, baseUrl);
+    const initialCommentBody = formatComment(deployment, baseUrl, appUuid, isProduction);
     await findOrCreateComment(octokit, initialCommentBody);
     
     // If deployment is already complete, we're done
@@ -236,6 +279,7 @@ async function run(): Promise<void> {
         commitSha,
         deployment.deployment_uuid,
         octokit,
+        isProduction,
         pollInterval,
         timeoutMinutes
       );
@@ -248,7 +292,7 @@ async function run(): Promise<void> {
     core.setOutput('log_link', `${baseUrl}/deployments/${deployment.deployment_uuid}`);
     
     // Final comment update (in case status changed during last poll)
-    const finalCommentBody = formatComment(deployment, baseUrl);
+    const finalCommentBody = formatComment(deployment, baseUrl, appUuid, isProduction);
     await findOrCreateComment(octokit, finalCommentBody);
     
   } catch (error) {
