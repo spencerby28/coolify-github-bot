@@ -119,11 +119,19 @@ async function run(): Promise<void> {
     const baseUrl = core.getInput('coolify_base_url', { required: true });
     const apiToken = core.getInput('coolify_api_token', { required: true });
     const appUuid = core.getInput('coolify_app_uuid', { required: true });
-    const githubToken = core.getInput('github_token') || process.env.GITHUB_TOKEN || '';
+    
+    // Get GitHub token from input, env var, or use empty string (will use default from @actions/github)
+    const githubTokenInput = core.getInput('github_token');
+    const githubTokenEnv = process.env.GITHUB_TOKEN;
+    const githubToken = githubTokenInput || githubTokenEnv || '';
+    
     const commitSha = github.context.sha;
 
     if (!githubToken) {
-      throw new Error('GitHub token is required. Provide github_token input or ensure GITHUB_TOKEN is set.');
+      core.warning('GitHub token not provided. This may cause issues posting comments.');
+      core.warning('Please ensure GITHUB_TOKEN is available or pass github_token input.');
+      // Don't throw error - let it try to use default token from @actions/github
+      // Some contexts might work without explicit token
     }
 
     core.info(`Looking for deployment with commit SHA: ${commitSha}`);
@@ -149,7 +157,12 @@ async function run(): Promise<void> {
     core.setOutput('log_link', `${baseUrl}/deployments/${deployment.deployment_uuid}`);
 
     const commentBody = formatComment(deployment, baseUrl);
-    const octokit = github.getOctokit(githubToken);
+    // Always pass a token - use provided one or fallback to env var (should always be available in GitHub Actions)
+    const tokenToUse = githubToken || process.env.GITHUB_TOKEN || '';
+    if (!tokenToUse) {
+      throw new Error('GitHub token is required. Please ensure GITHUB_TOKEN is available in your workflow.');
+    }
+    const octokit = github.getOctokit(tokenToUse);
     
     await findOrCreateComment(octokit, commentBody);
     
