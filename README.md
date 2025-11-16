@@ -113,8 +113,6 @@ on:
     branches: [main]
 ```
 
-Note: For push events, you'll need to use a different approach for comments (e.g., commit comments or deployment status API).
-
 ## How it works
 
 1. **Trigger**: Runs on PR open, update, reopen, or push to main
