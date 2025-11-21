@@ -11,6 +11,31 @@ interface CoolifyDeployment {
 }
 
 
+async function getDeploymentByUuid(
+  baseUrl: string,
+  apiToken: string,
+  deploymentUuid: string
+): Promise<CoolifyDeployment | null> {
+  const url = `${baseUrl}/api/v1/deployments/${deploymentUuid}`;
+  
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${apiToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      return null;
+    }
+    throw new Error(`Coolify API error: ${response.status} ${response.statusText}`);
+  }
+
+  const deployment = await response.json() as CoolifyDeployment;
+  return deployment;
+}
+
 async function getDeploymentForCommit(
   baseUrl: string,
   apiToken: string,
@@ -166,7 +191,7 @@ async function pollUntilComplete(
   deploymentUuid: string,
   octokit: ReturnType<typeof github.getOctokit>,
   isProduction: boolean,
-  pollIntervalSeconds: number = 10,
+  pollIntervalSeconds: number = 3,
   timeoutMinutes: number = 30
 ): Promise<CoolifyDeployment> {
   const timeoutMs = timeoutMinutes * 60 * 1000;
@@ -175,10 +200,17 @@ async function pollUntilComplete(
   let lastStatus = '';
   
   while (true) {
-    const deployment = await getDeploymentForCommit(baseUrl, apiToken, appUuid, commitSha);
+    // Use direct endpoint for faster polling (more efficient than listing all deployments)
+    let deployment = await getDeploymentByUuid(baseUrl, apiToken, deploymentUuid);
     
-    if (!deployment || deployment.deployment_uuid !== deploymentUuid) {
-      throw new Error('Deployment not found or changed during polling');
+    // Fallback to commit-based lookup if direct endpoint fails
+    if (!deployment) {
+      core.warning(`Direct deployment lookup failed, falling back to commit-based lookup`);
+      const fallbackDeployment = await getDeploymentForCommit(baseUrl, apiToken, appUuid, commitSha);
+      if (!fallbackDeployment || fallbackDeployment.deployment_uuid !== deploymentUuid) {
+        throw new Error('Deployment not found or changed during polling');
+      }
+      deployment = fallbackDeployment;
     }
     
     const status = deployment.status;
@@ -217,7 +249,7 @@ async function run(): Promise<void> {
     const baseUrl = core.getInput('coolify_base_url', { required: true });
     const apiToken = core.getInput('coolify_api_token', { required: true });
     const appUuid = core.getInput('coolify_app_uuid', { required: true });
-    const pollInterval = parseInt(core.getInput('poll_interval') || '10', 10);
+    const pollInterval = parseInt(core.getInput('poll_interval') || '3', 10);
     const timeoutMinutes = parseInt(core.getInput('timeout_minutes') || '30', 10);
     
     // Get GitHub token from input, env var, or use empty string (will use default from @actions/github)

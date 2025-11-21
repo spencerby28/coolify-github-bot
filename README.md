@@ -63,7 +63,7 @@ jobs:
           coolify_api_token: ${{ secrets.COOLIFY_API_TOKEN }}
           coolify_app_uuid: ${{ secrets.COOLIFY_APP_UUID }}
           github_token: ${{ github.token }}
-          # Optional: poll_interval: 10  # seconds between polls (default: 10)
+          # Optional: poll_interval: 3  # seconds between polls (default: 3). Use 3s for fast builds, 5-10s for slower builds
           # Optional: timeout_minutes: 30  # max wait time (default: 30)
 ```
 
@@ -101,6 +101,26 @@ jobs:
           coolify_app_uuid: ${{ secrets.COOLIFY_APP_UUID_PRODUCTION }}
 ```
 
+### Configuring Poll Interval
+
+Adjust the polling frequency based on your build times:
+
+```yaml
+- name: Coolify Deployment Status
+  uses: spencerby28/coolify-github-bot@v1.0.0
+  with:
+    coolify_base_url: ${{ secrets.COOLIFY_BASE_URL }}
+    coolify_api_token: ${{ secrets.COOLIFY_API_TOKEN }}
+    coolify_app_uuid: ${{ secrets.COOLIFY_APP_UUID }}
+    github_token: ${{ github.token }}
+    poll_interval: 3  # 3s for fast builds, 5-10s for slower builds
+```
+
+**Recommendations:**
+- **3 seconds** (default): Fast builds (< 5 minutes)
+- **5 seconds**: Medium builds (5-15 minutes)
+- **10 seconds**: Slow builds (> 15 minutes)
+
 ### Triggering on Push Events
 
 To also check deployments on push to main:
@@ -118,11 +138,11 @@ on:
 1. **Trigger**: Runs on PR open, update, reopen, or push to main
 2. **Initial Check**: Queries Coolify API for deployments matching the commit SHA
 3. **Post Comment**: Creates initial comment with current deployment status
-4. **Polling**: If deployment is in progress, polls every 10 seconds (configurable) until completion
+4. **Polling**: If deployment is in progress, polls every 3 seconds (configurable) until completion
 5. **Update Comment**: Updates the comment as status changes (in_progress → finished/failed)
 6. **Completion**: Action completes when deployment reaches terminal state (finished/failed) or timeout
 
-The action will wait up to 30 minutes (configurable) for deployment completion, updating the comment as the status changes.
+The action will wait up to 30 minutes (configurable) for deployment completion, updating the comment as the status changes. By default, it polls every 3 seconds for faster updates - you can adjust this based on your build times.
 
 ## Outputs
 

@@ -18,9 +18,9 @@ inputs:
     description: 'GitHub token for posting comments (defaults to GITHUB_TOKEN)'
     required: false
   poll_interval:
-    description: 'Polling interval in seconds (default: 10)'
+    description: 'Polling interval in seconds (default: 3). Adjust based on your build times - faster builds can use 3s, slower builds may prefer 5-10s'
     required: false
-    default: '10'
+    default: '3'
   timeout_minutes:
     description: 'Timeout in minutes for waiting for deployment completion (default: 30)'
     required: false
