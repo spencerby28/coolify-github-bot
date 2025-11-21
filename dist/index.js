@@ -29983,7 +29983,7 @@ async function getDeploymentForCommit(baseUrl, apiToken, appUuid, commitSha) {
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     return matching.length > 0 ? matching[0] : null;
 }
-function formatComment(deployment, baseUrl, appUuid, isProduction = false) {
+function formatComment(deployment, baseUrl, appUuid, isProduction = false, deploymentInfo) {
     const logLink = `${baseUrl}/deployments/${deployment.deployment_uuid}`;
     // Construct deployment page URL - users can retry from there
     const deploymentPageLink = `${baseUrl}/deployments/${deployment.deployment_uuid}`;
@@ -30029,7 +30029,24 @@ function formatComment(deployment, baseUrl, appUuid, isProduction = false) {
         lines.push('');
         lines.push(`<sub>Last updated: ${createdDate.toLocaleString()}</sub>`);
     }
+    // Add hidden metadata for webhook receiver (if provided)
+    if (deploymentInfo) {
+        lines.push('');
+        lines.push(`<!-- coolify-webhook:${JSON.stringify(deploymentInfo)} -->`);
+    }
     return lines.join('\n');
+}
+async function updateDeploymentStatus(octokit, deploymentId, state, deployment, baseUrl) {
+    const { repo } = github.context;
+    const logUrl = `${baseUrl}/deployments/${deployment.deployment_uuid}`;
+    await octokit.rest.repos.createDeploymentStatus({
+        ...repo,
+        deployment_id: deploymentId,
+        state,
+        log_url: logUrl,
+        description: `Coolify deployment ${deployment.status}`,
+        environment_url: deployment.fqdn,
+    });
 }
 async function findOrCreateComment(octokit, body) {
     const { repo, issue, eventName } = github.context;
@@ -30047,31 +30064,33 @@ async function findOrCreateComment(octokit, body) {
                 body,
             });
             core.info(`Updated existing PR comment ${existing.id}`);
+            return { id: existing.id };
         }
         else {
-            await octokit.rest.issues.createComment({
+            const { data: comment } = await octokit.rest.issues.createComment({
                 ...repo,
                 issue_number: issue.number,
                 body,
             });
             core.info('Created new PR comment');
+            return { id: comment.id };
         }
-        return;
     }
     // For push events, comment on the commit
     // Note: We can't update commit comments, so we create a new one each time
     // GitHub will show multiple comments, but that's acceptable for status updates
     if (eventName === 'push') {
         const { sha } = github.context;
-        await octokit.rest.repos.createCommitComment({
+        const { data: comment } = await octokit.rest.repos.createCommitComment({
             ...repo,
             commit_sha: sha,
             body,
         });
         core.info(`Created commit comment for ${sha}`);
-        return;
+        return { id: comment.id };
     }
     core.warning('No PR or push event detected, skipping comment');
+    return null;
 }
 async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -30093,7 +30112,7 @@ async function pollUntilComplete(baseUrl, apiToken, appUuid, commitSha, deployme
         if (status !== lastStatus) {
             core.info(`Deployment status changed: ${lastStatus || 'initial'} → ${status}`);
             const commentBody = formatComment(deployment, baseUrl, appUuid, isProduction);
-            await findOrCreateComment(octokit, commentBody);
+            await findOrCreateComment(octokit, commentBody).catch(() => null);
             lastStatus = status;
         }
         // Check if deployment is complete
@@ -30146,18 +30165,66 @@ async function run() {
         // Determine if this is a production deployment (push to main) or preview (PR)
         const { ref, eventName } = github.context;
         const isProduction = eventName === 'push' && (ref === 'refs/heads/main' || ref === 'refs/heads/master');
-        // Post initial comment
-        const initialCommentBody = formatComment(deployment, baseUrl, appUuid, isProduction);
-        await findOrCreateComment(octokit, initialCommentBody);
+        // Create GitHub Deployment for webhook support (optional - may fail if deployment already exists)
+        const environment = isProduction ? 'production' : 'preview';
+        let githubDeploymentId = null;
+        try {
+            const deploymentResponse = await octokit.rest.repos.createDeployment({
+                ...github.context.repo,
+                ref: commitSha,
+                environment,
+                description: `Coolify deployment: ${deployment.deployment_uuid}`,
+                auto_merge: false,
+                required_contexts: [],
+            });
+            // Check if response is a deployment object (not an error)
+            if ('id' in deploymentResponse.data) {
+                githubDeploymentId = deploymentResponse.data.id;
+            }
+        }
+        catch (error) {
+            core.warning('Could not create GitHub deployment (may already exist)');
+        }
+        // Store deployment mapping in comment for webhook receiver
+        const deploymentInfo = {
+            deployment_uuid: deployment.deployment_uuid,
+            github_deployment_id: githubDeploymentId || 0,
+            commit_sha: commitSha,
+            is_production: isProduction,
+            repo: github.context.repo.repo,
+            owner: github.context.repo.owner,
+            issue_number: github.context.issue?.number,
+        };
+        // Post initial comment with deployment info
+        const initialCommentBody = formatComment(deployment, baseUrl, appUuid, isProduction, deploymentInfo);
+        const comment = await findOrCreateComment(octokit, initialCommentBody);
+        // Update deployment status (if deployment was created)
+        if (githubDeploymentId) {
+            await updateDeploymentStatus(octokit, githubDeploymentId, deployment.status === 'finished' ? 'success' :
+                deployment.status === 'failed' ? 'failure' : 'in_progress', deployment, baseUrl).catch(err => core.warning(`Failed to update deployment status: ${err}`));
+        }
+        // Check if we should use webhooks (no polling) or fallback to polling
+        const useWebhooks = core.getInput('use_webhooks') === 'true';
         // If deployment is already complete, we're done
         const isTerminal = deployment.status === 'finished' || deployment.status === 'failed';
         if (isTerminal) {
             core.info(`Deployment already completed with status: ${deployment.status}`);
         }
+        else if (useWebhooks) {
+            // Webhook mode: Just wait briefly and exit - webhook will update comment
+            core.info('Webhook mode enabled. Waiting for webhook to update status...');
+            core.info(`Webhook URL: Set this in Coolify: ${core.getInput('webhook_url') || 'Not configured'}`);
+            core.info('Deployment registered. Webhook will update status when complete.');
+            // Exit early - webhook will handle updates
+        }
         else {
-            // Poll until completion
-            core.info(`Deployment in progress. Polling every ${pollInterval}s (timeout: ${timeoutMinutes}min)...`);
+            // Polling mode (fallback)
+            core.info(`Polling mode: Checking every ${pollInterval}s (timeout: ${timeoutMinutes}min)...`);
             deployment = await pollUntilComplete(baseUrl, apiToken, appUuid, commitSha, deployment.deployment_uuid, octokit, isProduction, pollInterval, timeoutMinutes);
+            // Update final status (if deployment was created)
+            if (githubDeploymentId) {
+                await updateDeploymentStatus(octokit, githubDeploymentId, deployment.status === 'finished' ? 'success' : 'failure', deployment, baseUrl).catch(err => core.warning(`Failed to update deployment status: ${err}`));
+            }
         }
         // Set final outputs
         core.setOutput('found', 'true');
@@ -30165,8 +30232,8 @@ async function run() {
         core.setOutput('url', deployment.fqdn || '');
         core.setOutput('log_link', `${baseUrl}/deployments/${deployment.deployment_uuid}`);
         // Final comment update (in case status changed during last poll)
-        const finalCommentBody = formatComment(deployment, baseUrl, appUuid, isProduction);
-        await findOrCreateComment(octokit, finalCommentBody);
+        const finalCommentBody = formatComment(deployment, baseUrl, appUuid, isProduction, deploymentInfo);
+        await findOrCreateComment(octokit, finalCommentBody).catch(() => null);
     }
     catch (error) {
         if (error instanceof Error) {
